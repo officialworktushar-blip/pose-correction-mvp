@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "verify:models": "node scripts/verify-model-assets.mjs",
     "test": "node --experimental-strip-types --test src/biomechanics/biomechanics.test.ts src/exercises/squat/squatAnalyzer.test.ts src/exercises/biceps-curl/bicepsCurlAnalyzer.test.ts src/dashboard/formQuality.test.ts",
     "lint": "oxlint",
     "preview": "vite preview"

@@ -15,24 +15,25 @@ npm ci
 npm run dev
 ```
 
-Open the local Vite URL printed in the terminal and select **Start camera**. Allow camera access when prompted. The first session downloads the MediaPipe WASM runtime and Heavy model, so it needs network access. The browser runs inference locally after those assets are loaded; no Python or inference server is used.
+Open the local Vite URL printed in the terminal and select **Start camera**. Allow camera access when prompted. The WASM runtime is fetched on first use; both pose model files are served by the app from `public/models/`. The browser runs inference locally; no Python or inference server is used.
 
 Run checks:
 
 ```sh
 npm test
 npm run lint
+npm run verify:models
 npm run build
 npm run preview
 ```
 
 ## MediaPipe asset hosting
 
-`@mediapipe/tasks-vision` is declared in `package.json` and locked in `package-lock.json`. The WASM fileset is loaded from the jsDelivr URL pinned to the installed package version (`@mediapipe/tasks-vision@1.2.3/wasm`). Pose model files are loaded from Google Cloud Storage's public MediaPipe model bucket: Heavy is the initial model, and Lite is used only by the existing low-FPS fallback. These are static HTTPS asset URLs, not a development server, Colab runtime, or API requiring a secret. The model paths match Google's documented/sample model paths ([Pose Landmarker docs](https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker)).
+`@mediapipe/tasks-vision` is declared in `package.json` and locked in `package-lock.json`. Its WASM fileset is loaded from the jsDelivr URL pinned to the installed package version (`@mediapipe/tasks-vision@1.2.3/wasm`). The Heavy and Lite `.task` models are bundled in `public/models/`, so Vite copies them to `dist/models/` and Vercel serves them from the same origin. Heavy remains the initial model; Lite remains the existing low-FPS fallback. There are no runtime model requests to Google Storage, no Colab dependency, and no inference API or secret.
 
-Keeping the large model files external avoids adding multi-megabyte model binaries to the Git repository and Vercel output. Production therefore depends on browser access to jsDelivr and Google Cloud Storage. In this deployment-preparation check, the pinned jsDelivr JavaScript and WASM endpoints returned HTTP 200 with CORS enabled, and the Lite model endpoint returned HTTP 200. A ranged GET for Heavy returned HTTP 403 with a Google response saying the service is unavailable in the validation host's location. The Heavy URL is the official documented path, but its reachability from each intended user's region still needs to be confirmed after deployment. If the Vercel audience's network also blocks it, self-host the versioned model under `public/models/` and change the model constants to `/models/...` URLs. Vercel's root `base` and the `/favicon.svg` path are configured for domain-root deployment; Vite copies `public/` contents to the root of `dist/`.
+The original official Google Storage Heavy URL returned HTTP 403 in this environment with a location restriction. The Heavy asset was obtained from a pinned Hugging Face mirror commit and its SHA-256 was checked against that mirror's published digest: `64437af838a65d18e5ba7a0d39b465540069bc8aae8308de3e318aad31fcbc7b`. The Lite fallback was retrieved from Google's public model bucket (HTTP 200). Model file sizes and digests are documented in `docs/model-assets.md`. Vite's `base` is applied through `import.meta.env.BASE_URL`, and `/favicon.svg` is copied from `public/` to the root of `dist/`.
 
-If an asset host is blocked on a deployment network, the model/WASM requests will fail and the dashboard displays an initialization error with a retry control. For environments that require self-hosting, copy the exact versioned WASM files and model files into `public/` and change `WASM_ROOT`, `HEAVY_MODEL`, and `LITE_MODEL` in `src/PoseCamera.tsx` to root-relative `/...` paths. Rebuild and verify the files in `dist/` before deploying. Do not commit downloaded binaries unless repository size and redistribution requirements have been reviewed.
+The WASM files still require browser access to jsDelivr; the model files are same-origin. If jsDelivr is blocked on a deployment network, copy the version-matched WASM files from `node_modules/@mediapipe/tasks-vision/wasm/` into `public/` and update `WASM_ROOT` in `src/PoseCamera.tsx` to `${import.meta.env.BASE_URL}...`. `npm run verify:models` checks the bundled SHA-256 values and initializes both model bundles through MediaPipe Tasks Vision in VIDEO mode on CPU. Vercel's root `base` and the favicon path are configured for domain-root deployment; Vite copies `public/` contents to the root of `dist/`.
 
 ## Camera permissions
 

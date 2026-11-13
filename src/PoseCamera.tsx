@@ -12,8 +12,9 @@ export type InferenceBackend = 'GPU' | 'CPU'
 type Props = { view: CameraView; activeExercise: 'squat' | 'curl'; onSquatUpdate: (result: SquatResult | null) => void; onCurlUpdate: (result: BicepsCurlResult | null) => void; onStatusChange: (phase: CameraPhase) => void; onModelInfo: (variant: PoseModelVariant, backend: InferenceBackend | null, note: string) => void }
 
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/wasm'
-const HEAVY_MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task'
-const LITE_MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task'
+const publicAssetUrl = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
+const HEAVY_MODEL = publicAssetUrl('models/pose_landmarker_heavy.task')
+const LITE_MODEL = publicAssetUrl('models/pose_landmarker_lite.task')
 const MIN_EFFICIENT_FPS = 8
 const SLOW_WINDOWS_BEFORE_FALLBACK = 3
 type VisionFileset = Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>
