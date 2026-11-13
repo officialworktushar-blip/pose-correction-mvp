@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision'
 import { analyzeImagePose, analyzeWorldPose, LandmarkSmoother, type JointAngle, type PoseLandmark } from './biomechanics/index.ts'
+import { SquatAnalyzer, type SquatResult } from './exercises/squat/index.ts'
+import { BicepsCurlAnalyzer, type BicepsCurlResult } from './exercises/biceps-curl/index.ts'
 
 export type CameraView = 'front' | 'side'
 
-type Props = { view: CameraView }
+type Props = { view: CameraView; onSquatUpdate: (result: SquatResult | null) => void; onCurlUpdate: (result: BicepsCurlResult | null) => void }
 type Phase = 'idle' | 'loading' | 'starting' | 'running' | 'error'
 
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/wasm'
@@ -16,7 +18,9 @@ const LANDMARK_NAMES = [
   'Left hip', 'Right hip', 'Left knee', 'Right knee', 'Left ankle', 'Right ankle', 'Left heel', 'Right heel', 'Left foot index', 'Right foot index',
 ]
 
-function PoseCamera({ view }: Props) {
+function PoseCamera({ view, onSquatUpdate, onCurlUpdate }: Props) {
+  const viewRef = useRef(view)
+  viewRef.current = view
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const landmarkerRef = useRef<PoseLandmarker | null>(null)
@@ -28,6 +32,8 @@ function PoseCamera({ view }: Props) {
   const operationRef = useRef(0)
   const imageSmootherRef = useRef(new LandmarkSmoother({ alpha: 0.72, minVisibility: 0.25 }))
   const worldSmootherRef = useRef(new LandmarkSmoother({ alpha: 0.72, minVisibility: 0.25 }))
+  const squatAnalyzerRef = useRef(new SquatAnalyzer())
+  const curlAnalyzerRef = useRef(new BicepsCurlAnalyzer())
   const [phase, setPhase] = useState<Phase>('idle')
   const [message, setMessage] = useState('Camera is off. Start when you’re ready.')
   const [fps, setFps] = useState(0)
@@ -62,9 +68,13 @@ function PoseCamera({ view }: Props) {
     setBackend(null)
     setLandmarks(null)
     setJointAngles(null)
+    onSquatUpdate(null)
+    squatAnalyzerRef.current.reset()
+    onCurlUpdate(null)
+    curlAnalyzerRef.current.reset()
     imageSmootherRef.current.reset()
     worldSmootherRef.current.reset()
-  }, [releaseCamera])
+  }, [releaseCamera, onSquatUpdate, onCurlUpdate])
 
   const start = useCallback(async () => {
     if (phase === 'loading' || phase === 'starting' || phase === 'running') return
@@ -73,6 +83,10 @@ function PoseCamera({ view }: Props) {
     setMessage('Loading the Heavy pose model…')
     setLandmarks(null)
     setJointAngles(null)
+    onSquatUpdate(null)
+    squatAnalyzerRef.current.reset()
+    onCurlUpdate(null)
+    curlAnalyzerRef.current.reset()
     imageSmootherRef.current.reset()
     worldSmootherRef.current.reset()
     setFps(0)
@@ -163,7 +177,7 @@ function PoseCamera({ view }: Props) {
             const smoothedImageLandmarks = imageSmootherRef.current.smooth(rawImageLandmarks, timestamp)
             const imageAnalysis = analyzeImagePose(rawImageLandmarks, smoothedImageLandmarks,
               { width: currentVideo.videoWidth, height: currentVideo.videoHeight },
-              { orientation: view, minVisibility: 0.5, minPresence: 0.5 })
+              { orientation: viewRef.current, minVisibility: 0.5, minPresence: 0.5 })
             const rawWorldLandmarks: PoseLandmark[] = (result.worldLandmarks[0] ?? []).map((point, index) => ({
               name: LANDMARK_NAMES[index] ?? `Point ${index + 1}`,
               x: point.x, y: point.y, z: point.z, visibility: point.visibility, presence: point.presence,
@@ -171,8 +185,10 @@ function PoseCamera({ view }: Props) {
             }))
             const smoothedWorldLandmarks = worldSmootherRef.current.smooth(rawWorldLandmarks, timestamp)
             const worldAnalysis = rawWorldLandmarks.length
-              ? analyzeWorldPose(rawWorldLandmarks, smoothedWorldLandmarks, { orientation: view, minVisibility: 0.5, minPresence: 0.5 })
+              ? analyzeWorldPose(rawWorldLandmarks, smoothedWorldLandmarks, { orientation: viewRef.current, minVisibility: 0.5, minPresence: 0.5 })
               : null
+            const squatResult = squatAnalyzerRef.current.update(imageAnalysis, worldAnalysis ?? undefined)
+            const curlResult = curlAnalyzerRef.current.update(imageAnalysis, worldAnalysis ?? undefined, timestamp)
             const drawPose = imageAnalysis.smoothedLandmarks
             context.lineWidth = Math.max(2, canvas.width / 360)
             context.lineCap = 'round'
@@ -196,7 +212,7 @@ function PoseCamera({ view }: Props) {
               context.lineWidth = Math.max(1, canvas.width / 720)
               context.stroke()
             }
-            if (performance.now() - lastUiUpdateRef.current > 250) {
+            if (performance.now() - lastUiUpdateRef.current > 250 || squatResult.repetitionCompleted || Object.values(curlResult.arms).some((arm) => arm?.repetitionCompleted)) {
               lastUiUpdateRef.current = performance.now()
               setMessage('Full body detected')
               setLandmarks(imageAnalysis.confidence.map((point, index) => ({ name: LANDMARK_NAMES[index] ?? point.name, visibility: point.visibility, presence: point.presence })))
@@ -204,6 +220,8 @@ function PoseCamera({ view }: Props) {
                 ...angle,
                 worldDegrees: worldAnalysis?.jointAngles[index]?.reliable ? worldAnalysis.jointAngles[index]?.degrees ?? undefined : undefined,
               })))
+              onSquatUpdate(squatResult)
+              onCurlUpdate(curlResult)
             }
           }
 
@@ -213,17 +231,18 @@ function PoseCamera({ view }: Props) {
             setFps(Math.round(fpsWindowRef.current.frames * 1000 / (now - fpsWindowRef.current.start)))
             fpsWindowRef.current = { start: now, frames: 0 }
           }
-          if (now - lastUiUpdateRef.current > 250) {
-            lastUiUpdateRef.current = now
-            if (!pose) setMessage('Looking for a person…')
-          }
           if (!pose) {
             imageSmootherRef.current.reset()
             worldSmootherRef.current.reset()
-            if (performance.now() - lastUiUpdateRef.current > 250) {
-              lastUiUpdateRef.current = performance.now()
+            squatAnalyzerRef.current.reset()
+            curlAnalyzerRef.current.reset()
+            if (now - lastUiUpdateRef.current > 250) {
+              lastUiUpdateRef.current = now
+              setMessage('Looking for a person…')
               setLandmarks(null)
               setJointAngles(null)
+              onSquatUpdate(null)
+              onCurlUpdate(null)
             }
           }
         }
@@ -239,7 +258,14 @@ function PoseCamera({ view }: Props) {
       setBackend(null)
       setMessage(getErrorMessage(error))
     }
-  }, [phase, releaseCamera])
+  }, [phase, releaseCamera, onSquatUpdate, onCurlUpdate])
+
+  useEffect(() => {
+    squatAnalyzerRef.current.reset()
+    curlAnalyzerRef.current.reset()
+    onSquatUpdate(null)
+    onCurlUpdate(null)
+  }, [view, onSquatUpdate, onCurlUpdate])
 
   useEffect(() => () => {
     operationRef.current += 1

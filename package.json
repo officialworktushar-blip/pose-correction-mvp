@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "node --experimental-strip-types --test src/biomechanics/biomechanics.test.ts",
+    "test": "node --experimental-strip-types --test src/biomechanics/biomechanics.test.ts src/exercises/squat/squatAnalyzer.test.ts src/exercises/biceps-curl/bicepsCurlAnalyzer.test.ts",
     "lint": "oxlint",
     "preview": "vite preview"
   },
