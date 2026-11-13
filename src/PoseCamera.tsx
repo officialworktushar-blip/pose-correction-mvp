@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision'
+import { analyzeImagePose, analyzeWorldPose, LandmarkSmoother, type JointAngle, type PoseLandmark } from './biomechanics/index.ts'
 
 export type CameraView = 'front' | 'side'
 
@@ -25,11 +26,14 @@ function PoseCamera({ view }: Props) {
   const lastUiUpdateRef = useRef(0)
   const fpsWindowRef = useRef({ start: 0, frames: 0 })
   const operationRef = useRef(0)
+  const imageSmootherRef = useRef(new LandmarkSmoother({ alpha: 0.72, minVisibility: 0.25 }))
+  const worldSmootherRef = useRef(new LandmarkSmoother({ alpha: 0.72, minVisibility: 0.25 }))
   const [phase, setPhase] = useState<Phase>('idle')
   const [message, setMessage] = useState('Camera is off. Start when you’re ready.')
   const [fps, setFps] = useState(0)
   const [backend, setBackend] = useState<'GPU' | 'CPU' | null>(null)
   const [landmarks, setLandmarks] = useState<Array<{ name: string; visibility?: number; presence?: number }> | null>(null)
+  const [jointAngles, setJointAngles] = useState<Array<JointAngle & { worldDegrees?: number }> | null>(null)
 
   const releaseCamera = useCallback(() => {
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
@@ -57,6 +61,9 @@ function PoseCamera({ view }: Props) {
     setFps(0)
     setBackend(null)
     setLandmarks(null)
+    setJointAngles(null)
+    imageSmootherRef.current.reset()
+    worldSmootherRef.current.reset()
   }, [releaseCamera])
 
   const start = useCallback(async () => {
@@ -65,6 +72,9 @@ function PoseCamera({ view }: Props) {
     setPhase('loading')
     setMessage('Loading the Heavy pose model…')
     setLandmarks(null)
+    setJointAngles(null)
+    imageSmootherRef.current.reset()
+    worldSmootherRef.current.reset()
     setFps(0)
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access is unavailable. Open this page on localhost or use a secure (HTTPS) connection.')
@@ -144,19 +154,39 @@ function PoseCamera({ view }: Props) {
           context.clearRect(0, 0, canvas.width, canvas.height)
           const pose = result.landmarks[0]
           if (pose) {
+            const rawImageLandmarks: PoseLandmark[] = pose.map((point, index) => ({
+              name: LANDMARK_NAMES[index] ?? `Point ${index + 1}`,
+              x: point.x, y: point.y, z: point.z, visibility: point.visibility, presence: point.presence,
+              coordinateSpace: 'image-normalized',
+            }))
+            const timestamp = performance.now()
+            const smoothedImageLandmarks = imageSmootherRef.current.smooth(rawImageLandmarks, timestamp)
+            const imageAnalysis = analyzeImagePose(rawImageLandmarks, smoothedImageLandmarks,
+              { width: currentVideo.videoWidth, height: currentVideo.videoHeight },
+              { orientation: view, minVisibility: 0.5, minPresence: 0.5 })
+            const rawWorldLandmarks: PoseLandmark[] = (result.worldLandmarks[0] ?? []).map((point, index) => ({
+              name: LANDMARK_NAMES[index] ?? `Point ${index + 1}`,
+              x: point.x, y: point.y, z: point.z, visibility: point.visibility, presence: point.presence,
+              coordinateSpace: 'world-meters',
+            }))
+            const smoothedWorldLandmarks = worldSmootherRef.current.smooth(rawWorldLandmarks, timestamp)
+            const worldAnalysis = rawWorldLandmarks.length
+              ? analyzeWorldPose(rawWorldLandmarks, smoothedWorldLandmarks, { orientation: view, minVisibility: 0.5, minPresence: 0.5 })
+              : null
+            const drawPose = imageAnalysis.smoothedLandmarks
             context.lineWidth = Math.max(2, canvas.width / 360)
             context.lineCap = 'round'
             context.strokeStyle = 'rgba(183, 143, 255, 0.88)'
             for (const { start: from, end: to } of PoseLandmarker.POSE_CONNECTIONS) {
-              const a = pose[from]
-              const b = pose[to]
+              const a = drawPose[from]
+              const b = drawPose[to]
               if (!a || !b || (a.visibility ?? 1) < 0.25 || (b.visibility ?? 1) < 0.25) continue
               context.beginPath()
               context.moveTo(a.x * canvas.width, a.y * canvas.height)
               context.lineTo(b.x * canvas.width, b.y * canvas.height)
               context.stroke()
             }
-            for (const point of pose) {
+            for (const point of drawPose) {
               if ((point.visibility ?? 1) < 0.25) continue
               context.beginPath()
               context.arc(point.x * canvas.width, point.y * canvas.height, Math.max(3, canvas.width / 190), 0, Math.PI * 2)
@@ -165,6 +195,15 @@ function PoseCamera({ view }: Props) {
               context.strokeStyle = '#9a68ff'
               context.lineWidth = Math.max(1, canvas.width / 720)
               context.stroke()
+            }
+            if (performance.now() - lastUiUpdateRef.current > 250) {
+              lastUiUpdateRef.current = performance.now()
+              setMessage('Full body detected')
+              setLandmarks(imageAnalysis.confidence.map((point, index) => ({ name: LANDMARK_NAMES[index] ?? point.name, visibility: point.visibility, presence: point.presence })))
+              setJointAngles(imageAnalysis.jointAngles.map((angle, index) => ({
+                ...angle,
+                worldDegrees: worldAnalysis?.jointAngles[index]?.reliable ? worldAnalysis.jointAngles[index]?.degrees ?? undefined : undefined,
+              })))
             }
           }
 
@@ -176,8 +215,16 @@ function PoseCamera({ view }: Props) {
           }
           if (now - lastUiUpdateRef.current > 250) {
             lastUiUpdateRef.current = now
-            setMessage(pose ? 'Full body detected' : 'Looking for a person…')
-            setLandmarks(pose ? pose.map((point, index) => ({ name: LANDMARK_NAMES[index] ?? `Point ${index + 1}`, visibility: point.visibility, presence: point.presence })) : null)
+            if (!pose) setMessage('Looking for a person…')
+          }
+          if (!pose) {
+            imageSmootherRef.current.reset()
+            worldSmootherRef.current.reset()
+            if (performance.now() - lastUiUpdateRef.current > 250) {
+              lastUiUpdateRef.current = performance.now()
+              setLandmarks(null)
+              setJointAngles(null)
+            }
           }
         }
         rafRef.current = requestAnimationFrame(renderFrame)
@@ -213,7 +260,9 @@ function PoseCamera({ view }: Props) {
       </div>
       <div className="capture-controls"><div className="capture-status"><span className={phase === 'running' ? 'status-light on' : phase === 'error' ? 'status-light error' : 'status-light'} />{phase === 'running' ? `Tracking active · ${backend ?? 'GPU'}` : phase === 'loading' ? 'Loading model…' : phase === 'starting' ? 'Starting camera…' : phase === 'error' ? message : 'Camera stopped'}</div><div className="control-actions"><button className="text-control" onClick={stop} disabled={phase === 'idle'}>Stop</button><button className="start-button" onClick={start} disabled={phase === 'loading' || phase === 'starting' || phase === 'running'}><span>{phase === 'running' ? '●' : '▶'}</span>{phase === 'error' ? 'Try again' : phase === 'running' ? 'Camera running' : phase === 'loading' ? 'Loading model…' : phase === 'starting' ? 'Starting…' : 'Start camera'}</button></div></div>
       {phase === 'error' && <p className="camera-error" role="alert">{message}</p>}
-      <div className="landmark-readout"><div className="readout-header"><span>LANDMARK INSPECTOR</span><span>{landmarks ? `${landmarks.length} / 33` : 'AWAITING DETECTION'}</span></div>{landmarks ? <div className="landmark-list" role="list" aria-label="Detected landmark confidence values">{landmarks.map((point, index) => <div className="landmark-row" role="listitem" key={`${point.name}-${index}`}><span className="point-index">{String(index + 1).padStart(2, '0')}</span><span className="point-name">{point.name}</span><span className="point-metrics">{point.visibility !== undefined ? `V ${point.visibility.toFixed(2)}` : 'V —'}<br />{point.presence !== undefined ? `P ${point.presence.toFixed(2)}` : 'P —'}</span><span className={point.visibility !== undefined && point.visibility < 0.25 ? 'point-state faint' : 'point-state'} /></div>)}</div> : <p className="readout-empty">Start the camera to inspect live landmark visibility and presence scores.</p>}</div>
+      <div className="landmark-readout"><div className="readout-header"><span>LANDMARK INSPECTOR</span><span>{landmarks ? `${landmarks.length} / 33` : 'AWAITING DETECTION'}</span></div>{landmarks ? <div className="landmark-list" role="list" aria-label="Detected landmark confidence values">{landmarks.map((point, index) => <div className="landmark-row" role="listitem" key={`${point.name}-${index}`}><span className="point-index">{String(index + 1).padStart(2, '0')}</span><span className="point-name">{point.name}</span><span className="point-metrics">{point.visibility !== undefined ? `V ${point.visibility.toFixed(2)}` : 'V —'}<br />{point.presence !== undefined ? `P ${point.presence.toFixed(2)}` : 'P —'}</span><span className={point.visibility !== undefined && point.visibility < 0.25 ? 'point-state faint' : 'point-state'} /></div>)}</div> : <p className="readout-empty">Start the camera to inspect live landmark visibility and presence scores.</p>}
+        <div className="angle-section"><div className="angle-heading"><span>JOINT ANGLES</span><span>2D IMAGE / 3D WORLD</span></div>{jointAngles ? <div className="angle-grid">{jointAngles.map((angle) => <div className="angle-row" key={angle.joint}><span>{angle.joint.replace(/([A-Z])/g, ' $1')}</span><strong className={angle.reliable ? '' : 'unreliable'}>{angle.degrees === null ? '—' : `${angle.degrees.toFixed(0)}°`}</strong><strong className={angle.worldDegrees === undefined ? 'unreliable' : ''}>{angle.worldDegrees === undefined ? '—' : `${angle.worldDegrees.toFixed(0)}°`}</strong></div>)}</div> : <p className="angle-empty">Angles appear when the relevant landmarks are visible.</p>}</div>
+      </div>
     </div>
   )
 }
