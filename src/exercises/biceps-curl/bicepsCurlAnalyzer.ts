@@ -181,7 +181,9 @@ export class BicepsCurlAnalyzer {
         feedback: [{ code: 'visibility', arm, message: `Insufficient visibility for the ${arm} arm. Keep shoulder, elbow, wrist and hip in frame.`, severity: 'info' }] }
     }
 
-    if (state.phase === 'starting' && flexion <= this.config.maxStartingFlexionDegrees) {
+    const postureStable = state.previousFlexion === null
+      || Math.abs(flexion - state.previousFlexion) <= this.config.movementDeadbandDegrees
+    if (state.phase === 'starting' && postureStable && flexion <= this.config.maxStartingFlexionDegrees) {
       state.baselineFlexion = state.baselineFlexion === null ? flexion : state.baselineFlexion * 0.9 + flexion * 0.1
       if (!state.neutral) state.neutral = { elbowAlong: geometry.elbowAlong, elbowAcross: geometry.elbowAcross,
         shoulderGap: geometry.shoulderGap, torsoAngle: geometry.torsoAngle, torsoLength: geometry.torsoLength }

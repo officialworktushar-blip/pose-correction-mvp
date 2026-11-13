@@ -54,6 +54,23 @@ test('tracks left and right arms independently', () => {
   assert.equal(next.arms.right?.visibilitySufficient, true)
 })
 
+test('side-view curl flexion uses the corresponding 3D world elbow angle', () => {
+  const analyzer = new BicepsCurlAnalyzer(quickConfig())
+  const sideImage = () => ({ ...frame(0), orientation: 'side' as const })
+  analyzer.update(sideImage(), worldFrame(sideImage(), 0), 0)
+  analyzer.update(sideImage(), worldFrame(sideImage(), 15), 100)
+  const result = analyzer.update(sideImage(), worldFrame(sideImage(), 30), 200)
+  assert.equal(arm(result, 'left')?.metrics.elbowFlexionDegrees, 30)
+})
+
+test('counts repeated curls once per full movement cycle', () => {
+  const analyzer = new BicepsCurlAnalyzer(quickConfig())
+  for (const [flexion, timestamp] of [[0, 0], [15, 100], [30, 200], [80, 300], [70, 400], [60, 500], [30, 600], [5, 700], [3, 800], [2, 900], [15, 1000], [30, 1100], [80, 1200], [70, 1300], [60, 1400], [30, 1500], [5, 1600], [3, 1700]]) {
+    analyzer.update(frame(flexion), undefined, timestamp)
+  }
+  assert.equal(analyzer.update(frame(2), undefined, 1800).totalRepetitions, 2)
+})
+
 test('reports elbow stability, shoulder elevation, torso swing and controlled lowering cues', () => {
   const config = quickConfig({ maxElbowDriftTorsoRatio: 0.02, maxShoulderElevationTorsoRatio: 0.01,
     maxTorsoSwingDegrees: 2, maxLoweringSpeedDegreesPerSecond: 80 })
@@ -98,4 +115,12 @@ function frame(flexion: number, tweak: { elbowX?: number; shoulderY?: number; sh
 
 function point(x: number, y: number): PoseLandmark {
   return { name: 'sample', x, y, z: 0, visibility: 0.99, presence: 0.99, coordinateSpace: 'image-normalized' }
+}
+
+function worldFrame(image: PoseAnalysis, elbowFlexion: number): PoseAnalysis {
+  return { ...image, coordinateSpace: 'world-3d',
+    rawLandmarks: image.rawLandmarks.map((point) => ({ ...point, coordinateSpace: 'world-meters' })),
+    smoothedLandmarks: image.smoothedLandmarks.map((point) => ({ ...point, coordinateSpace: 'world-meters' })),
+    jointAngles: image.jointAngles.map((angle) => ({ ...angle, coordinateSpace: 'world-3d',
+      degrees: angle.joint === 'leftElbow' ? 180 - elbowFlexion : angle.degrees })) }
 }

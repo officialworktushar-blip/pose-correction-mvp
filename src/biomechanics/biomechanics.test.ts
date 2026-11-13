@@ -51,6 +51,20 @@ test('aspect-corrects normalized image coordinates before angle analysis', () =>
   assert.equal(analysis.jointAngles.find((angle) => angle.joint === 'leftElbow')?.degrees, 90)
 })
 
+test('keeps left and right elbow and knee triplets mapped to their own landmarks', () => {
+  const pose = makePose()
+  setAngleTriplet(pose, 11, 13, 15, 90)
+  setAngleTriplet(pose, 12, 14, 16, 60)
+  setAngleTriplet(pose, 23, 25, 27, 120)
+  setAngleTriplet(pose, 24, 26, 28, 140)
+  const result = analyzeImagePose(pose, pose, { width: 640, height: 480 })
+  const values = Object.fromEntries(result.jointAngles.map(({ joint, degrees }) => [joint, degrees]))
+  assert.equal(values.leftElbow, 90)
+  assert.ok(Math.abs((values.rightElbow ?? 0) - 60) < 1e-8)
+  assert.ok(Math.abs((values.leftKnee ?? 0) - 120) < 1e-8)
+  assert.ok(Math.abs((values.rightKnee ?? 0) - 140) < 1e-8)
+})
+
 test('smoothing keeps raw inputs unchanged and obeys the configured alpha', () => {
   const smoother = new LandmarkSmoother({ alpha: 0.5 })
   const first = point(0, 0)
@@ -76,4 +90,12 @@ function makePose(): PoseLandmark[] {
 
 function point(x: number, y: number): PoseLandmark {
   return { name: 'test', x, y, z: 0, visibility: 0.99, presence: 0.99, coordinateSpace: 'image-normalized' }
+}
+
+function setAngleTriplet(pose: PoseLandmark[], aIndex: number, bIndex: number, cIndex: number, degrees: number) {
+  const center = { x: 140 + (bIndex % 5) * 35, y: 140 + Math.floor(bIndex / 5) * 30 }
+  const radians = (180 - degrees) * Math.PI / 180
+  pose[bIndex] = point(center.x / 640, center.y / 480)
+  pose[aIndex] = point((center.x - 40) / 640, center.y / 480)
+  pose[cIndex] = point((center.x + Math.cos(radians) * 40) / 640, (center.y + Math.sin(radians) * 40) / 480)
 }
